@@ -149,3 +149,23 @@ If the API or Dispatcher crashes at any point, uncommitted jobs never reach the 
 - **Retryable Errors** (e.g. network drops, temporary external outages): Rescheduled using exponential backoff with full jitter up to `max_attempts`.
 - **Cancelled Tasks**: Cooperative checkpoints inside task execution immediately cease work, transition to `CANCELLED`, and prevent any scheduled retries.
 
+---
+
+## 9. Execution Cycles & Failure Telemetry
+
+### Retry Semantics & Execution Cycles
+- **Definition of `max_attempts`**: `max_attempts` represents the maximum number of attempts allowed **within a single execution cycle**.
+- **Automatic Retries**: Within an active cycle, automatic retries increment `attempt_count` and `total_attempt_count`. If `attempt_count >= max_attempts`, the cycle terminates in `FAILED` with classification `RETRY_BUDGET_EXHAUSTED`.
+- **Manual Retries**: A permitted manual retry of a terminal job (`FAILED` or `CANCELLED`) initiates a **new execution cycle** (`execution_cycle += 1`).
+  - Current-cycle `attempt_count` is reset to 0 to grant a fresh retry budget of `max_attempts`.
+  - `total_attempt_count` retains lifetime execution history and is never reset.
+  - Previous failure events, diagnostics, and timestamps remain preserved in PostgreSQL audit events (`JobEvent`).
+- **Cycle Fencing**: Queue payloads and worker fencing tokens carry the originating `execution_cycle`. If a stale worker completes work on an earlier cycle after a manual retry has advanced the job, the worker's commit is safely aborted (`CYCLE FENCING VIOLATION`).
+- **Atomic Manual Retry**: Concurrency control via database row-level locking (`with_for_update()`) and state machine validation prevents race conditions from double-incrementing cycles.
+
+### Structured Failure Reporting & Traceback Capture
+- Worker exceptions are captured actively inside `except Exception as exc:` blocks using `traceback.format_exception(exc)` to extract the exception class, message, and stack frame.
+- If a failure occurs without an active exception (e.g. non-exception cancellation or manual abort), `error_details` avoids storing `NoneType: None` and instead records structured context or clean `None`.
+- Telemetry redaction (`sanitize_data`) strips sensitive credentials, tokens, and authorization headers before logging or AI diagnostics transmission.
+
+
