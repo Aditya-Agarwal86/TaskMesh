@@ -242,3 +242,92 @@ async def test_worker_termination_and_lease_expiry_handoff(db_session: AsyncSess
     await db_session.refresh(job)
     assert job.status == JobStatus.SUCCEEDED.value
     assert job.worker_id == "worker-replacement-2"
+
+
+@pytest.mark.asyncio
+async def test_job_creation_persists_initial_job_created_event(client: AsyncClient, db_session: AsyncSession):
+    """
+    Requirements 1 & 2: Every newly created job must have a durable creation event
+    (JOB_CREATED) stored atomically in PostgreSQL.
+    """
+    res = await client.post(
+        "/api/v1/jobs",
+        json={"task_type": "sleep", "payload": {"duration_seconds": 0.1}, "priority": 8},
+    )
+    assert res.status_code == 202
+    job_id = uuid.UUID(res.json()["id"])
+
+    # Query events directly from DB
+    events = (await db_session.execute(select(JobEvent).where(JobEvent.job_id == job_id))).scalars().all()
+    assert len(events) >= 1
+    assert events[0].event_type == "JOB_CREATED"
+    assert events[0].metadata_payload.get("priority") == 8
+    assert events[0].metadata_payload.get("task_type") == "sleep"
+
+    # Also verify the API events endpoint exposes the creation event
+    api_events_res = await client.get(f"/api/v1/jobs/{job_id}/events")
+    assert api_events_res.status_code == 200
+    api_events = api_events_res.json()
+    assert len(api_events) >= 1
+    assert api_events[0]["event_type"] == "JOB_CREATED"
+
+
+@pytest.mark.asyncio
+async def test_terminal_jobs_cannot_be_re_enqueued_or_double_transitioned(client: AsyncClient, db_session: AsyncSession, fake_redis):
+    """
+    Requirement 8: Succeeded terminal jobs cannot be re-enqueued through ordinary retry paths.
+    Attempting to call /retry on a SUCCEEDED job returns 409 Conflict.
+    """
+    res = await client.post(
+        "/api/v1/jobs",
+        json={"task_type": "sleep", "payload": {"duration_seconds": 0.1}},
+    )
+    job_id = res.json()["id"]
+
+    # Mark job as SUCCEEDED in database
+    job_db = (await db_session.execute(select(Job).where(Job.id == uuid.UUID(job_id)))).scalar_one()
+    job_db.status = JobStatus.SUCCEEDED.value
+    await db_session.commit()
+
+    # Attempt to retry the SUCCEEDED job
+    retry_res = await client.post(f"/api/v1/jobs/{job_id}/retry")
+    assert retry_res.status_code == 409
+    body = retry_res.json()
+    assert "cannot be manually retried" in body["detail"]["message"].lower() or "INVALID_STATE_FOR_RETRY" in str(body)
+
+    # Verify status remains SUCCEEDED
+    await db_session.refresh(job_db)
+    assert job_db.status == JobStatus.SUCCEEDED.value
+
+
+@pytest.mark.asyncio
+async def test_cancellation_before_execution_and_around_retry(client: AsyncClient, db_session: AsyncSession):
+    """
+    Requirement 6: Test cancellation before execution (while QUEUED) and around retry scheduling (while RETRYING).
+    """
+    # 1. Cancel while QUEUED
+    res1 = await client.post(
+        "/api/v1/jobs",
+        json={"task_type": "sleep", "payload": {"duration_seconds": 1.0}},
+    )
+    job_id1 = res1.json()["id"]
+
+    cancel_res1 = await client.post(f"/api/v1/jobs/{job_id1}/cancel?reason=cancelled_while_queued")
+    assert cancel_res1.status_code == 200
+    assert cancel_res1.json()["status"] == "CANCELLED"
+
+    # 2. Cancel while RETRYING
+    res2 = await client.post(
+        "/api/v1/jobs",
+        json={"task_type": "fail_once", "payload": {}},
+    )
+    job_id2 = res2.json()["id"]
+
+    job_db2 = (await db_session.execute(select(Job).where(Job.id == uuid.UUID(job_id2)))).scalar_one()
+    job_db2.status = JobStatus.RETRYING.value
+    await db_session.commit()
+
+    cancel_res2 = await client.post(f"/api/v1/jobs/{job_id2}/cancel?reason=cancelled_while_retrying")
+    assert cancel_res2.status_code == 200
+    assert cancel_res2.json()["status"] == "CANCELLED"
+
