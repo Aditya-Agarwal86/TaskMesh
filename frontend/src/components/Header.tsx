@@ -143,11 +143,34 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="header-controls">
         {renderStreamBadge()}
 
-        {(lastEventTime || lastUpdated) && (
-          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            Updated {(lastEventTime || lastUpdated)?.toLocaleTimeString()}
-          </span>
-        )}
+        {(() => {
+          const updateTime = lastEventTime || lastUpdated;
+          if (!updateTime) return null;
+
+          const isStale =
+            streamStatus === 'disconnected' ||
+            streamStatus === 'reconnecting' ||
+            streamStatus === 'polling_fallback' ||
+            Date.now() - updateTime.getTime() > 30000;
+
+          return (
+            <span
+              style={{
+                fontSize: '0.75rem',
+                color: isStale ? '#fbbf24' : 'var(--text-muted)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.3rem',
+              }}
+              title={isStale ? 'Data may be stale. Check stream status or refresh manually.' : 'Latest successful telemetry update'}
+            >
+              {isStale && <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#fbbf24' }} />}
+              <span>{isStale ? 'Stale (Updated ' : 'Updated '}</span>
+              <span>{updateTime.toLocaleTimeString()}</span>
+              {isStale && <span>)</span>}
+            </span>
+          );
+        })()}
 
         <button
           className="btn btn-secondary btn-sm"

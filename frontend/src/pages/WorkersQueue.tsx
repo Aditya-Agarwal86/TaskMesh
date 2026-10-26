@@ -158,9 +158,9 @@ export const WorkersQueue: React.FC<WorkersQueueProps> = ({ onSelectJob, refresh
           icon={<Heart size={18} />}
         />
         <MetricCard
-          label="Completed Jobs"
-          value={metrics?.completed_jobs ?? 0}
-          subtitle="Successfully executed"
+          label="Succeeded Jobs"
+          value={metrics ? (metrics.succeeded_jobs ?? metrics.completed_jobs) : '-'}
+          subtitle={metrics ? `${metrics.processed_jobs ?? 0} total processed` : 'Metrics loading...'}
           icon={<Zap size={18} />}
         />
         <MetricCard

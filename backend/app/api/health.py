@@ -50,8 +50,13 @@ class SystemMetricsResponse(BaseModel):
     queue_depth: Dict[str, int]
     job_counts_by_status: Dict[str, int]
     service_status: str
-    completed_jobs: int
+    total_jobs: int
+    processed_jobs: int
+    succeeded_jobs: int
+    completed_jobs: int  # Synonym for succeeded_jobs for backward compatibility
     failed_jobs: int
+    cancelled_jobs: int
+    terminal_jobs: int
     total_retries: int
     active_workers_count: int
     workers: List[WorkerHeartbeatInfo]
@@ -126,8 +131,20 @@ async def metrics(db: AsyncSession = Depends(get_db)) -> SystemMetricsResponse:
     total_retries = total_retries_res.scalar() or 0
 
 
-    completed_jobs = status_counts.get(JobStatus.SUCCEEDED.value, 0)
+    succeeded_jobs = status_counts.get(JobStatus.SUCCEEDED.value, 0)
     failed_jobs = status_counts.get(JobStatus.FAILED.value, 0)
+    cancelled_jobs = status_counts.get(JobStatus.CANCELLED.value, 0)
+    running_jobs_count = status_counts.get(JobStatus.RUNNING.value, 0)
+    retrying_jobs_count = status_counts.get(JobStatus.RETRYING.value, 0)
+    queued_jobs_count = status_counts.get(JobStatus.QUEUED.value, 0)
+
+    # Distinct categories:
+    # 1. total_jobs: All jobs in the system across all states
+    total_jobs = sum(status_counts.values())
+    # 2. terminal_jobs: Jobs that have reached a terminal outcome
+    terminal_jobs = succeeded_jobs + failed_jobs + cancelled_jobs
+    # 3. processed_jobs: Jobs that have been picked up and processed (succeeded, failed, or currently running/retrying)
+    processed_jobs = succeeded_jobs + failed_jobs + running_jobs_count + retrying_jobs_count
 
     # 4. Calculate execution duration from completed jobs with both started_at and completed_at
     completed_jobs_stmt = (
@@ -220,8 +237,13 @@ async def metrics(db: AsyncSession = Depends(get_db)) -> SystemMetricsResponse:
         queue_depth=queue_metrics,
         job_counts_by_status=status_counts,
         service_status="healthy",
-        completed_jobs=completed_jobs,
+        total_jobs=total_jobs,
+        processed_jobs=processed_jobs,
+        succeeded_jobs=succeeded_jobs,
+        completed_jobs=succeeded_jobs,  # Backward compatibility synonym
         failed_jobs=failed_jobs,
+        cancelled_jobs=cancelled_jobs,
+        terminal_jobs=terminal_jobs,
         total_retries=int(total_retries),
         active_workers_count=len(worker_list),
         workers=worker_list,

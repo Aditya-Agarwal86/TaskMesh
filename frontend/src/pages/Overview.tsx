@@ -124,8 +124,8 @@ export const Overview: React.FC<OverviewProps> = ({ onSelectJob, onNavigateExplo
         <div onClick={() => onNavigateExplorer()} style={{ cursor: 'pointer' }}>
           <MetricCard
             label="Total Jobs"
-            value={totalJobs}
-            subtitle="View all job lifecycles"
+            value={metrics?.total_jobs ?? totalJobs}
+            subtitle={`${metrics?.processed_jobs ?? (counts.SUCCEEDED + counts.FAILED + counts.RUNNING + counts.RETRYING)} processed`}
             icon={<Layers size={18} />}
           />
         </div>

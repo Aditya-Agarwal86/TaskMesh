@@ -77,8 +77,13 @@ export interface SystemMetrics {
   };
   job_counts_by_status: Record<JobStatus, number>;
   service_status: string;
+  total_jobs: number;
+  processed_jobs: number;
+  succeeded_jobs: number;
   completed_jobs: number;
   failed_jobs: number;
+  cancelled_jobs?: number;
+  terminal_jobs: number;
   total_retries: number;
   active_workers_count: number;
   workers: WorkerHeartbeatInfo[];

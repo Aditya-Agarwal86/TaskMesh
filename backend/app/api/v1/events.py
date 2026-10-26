@@ -34,6 +34,9 @@ async def event_stream(request: Request):
     queue = await broadcaster.register()
 
     async def sse_generator() -> AsyncGenerator[str, None]:
+        # Immediate handshake comment so browser EventSource flushes HTTP headers and establishes state
+        yield ": handshake\n\n"
+
         # Initial connection acknowledgement
         initial_msg = {
             "event": "connected",

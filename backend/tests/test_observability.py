@@ -29,14 +29,14 @@ async def test_sse_stream_connection_and_heartbeat():
                 {"job_id": "test-stream-uuid", "status": "RUNNING", "event_type": "JOB_STARTED"},
             )
 
-    # Verify initial connected event and subsequent job_update event was yielded
+    # Verify immediate handshake comment chunk and connected event
+    assert chunks[0] == ": handshake\n\n"
     assert any("event: connected" in c for c in chunks)
     assert any("event: job_update" in c for c in chunks)
     assert any("test-stream-uuid" in c for c in chunks)
 
     # After iterator terminates, client is unregistered
     assert broadcaster.active_connections_count == initial_subs
-
 
 
 @pytest.mark.asyncio
@@ -52,16 +52,27 @@ async def test_operational_metrics_contract(client):
     assert "dlq" in data["queue_depth"]
 
     assert "job_counts_by_status" in data
+    assert "total_jobs" in data
+    assert "processed_jobs" in data
+    assert "succeeded_jobs" in data
     assert "completed_jobs" in data
     assert "failed_jobs" in data
+    assert "cancelled_jobs" in data
+    assert "terminal_jobs" in data
     assert "total_retries" in data
     assert "active_workers_count" in data
     assert "workers" in data
     assert "execution_duration" in data
+
+    # Verify relationships between metric aggregations
+    assert data["succeeded_jobs"] == data["completed_jobs"]
+    assert data["terminal_jobs"] >= (data["succeeded_jobs"] + data["failed_jobs"] + data["cancelled_jobs"])
+    assert data["total_jobs"] >= data["processed_jobs"]
 
     dur = data["execution_duration"]
     assert "avg_seconds" in dur
     assert "min_seconds" in dur
     assert "max_seconds" in dur
     assert "sample_count" in dur
+
 

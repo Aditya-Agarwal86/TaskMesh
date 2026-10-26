@@ -26,7 +26,24 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
     ]
+
+    def get_cors_origins(self) -> List[str]:
+        """Parses CORS_ORIGINS as a sanitized list, rejecting wildcard '*' if allow_credentials is used."""
+        if isinstance(self.CORS_ORIGINS, str):
+            origins = [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+        else:
+            origins = list(self.CORS_ORIGINS)
+        # Filter out wildcard '*' to prevent invalid CORS configuration when allow_credentials=True
+        cleaned = [o for o in origins if o != "*"]
+        return cleaned or [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
 
     # Queue & Worker Settings
     DEFAULT_JOB_LEASE_TIMEOUT_SECONDS: int = 60
