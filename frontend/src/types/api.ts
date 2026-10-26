@@ -17,6 +17,8 @@ export interface Job {
   status: JobStatus;
   attempt_count: number;
   max_attempts: number;
+  execution_cycle?: number;
+  total_attempt_count?: number;
   idempotency_key?: string | null;
   created_at: string;
   updated_at: string;

@@ -6,6 +6,18 @@ import { Search, ChevronLeft, ChevronRight, X, AlertTriangle, Filter } from 'luc
 
 interface JobExplorerProps {
   onSelectJob: (job: Job) => void;
+  savedFilters?: {
+    status?: string;
+    priority?: string;
+    taskType?: string;
+    searchId?: string;
+  };
+  onUpdateFilters?: (filters: {
+    status?: string;
+    priority?: string;
+    taskType?: string;
+    searchId?: string;
+  }) => void;
   initialStatus?: string;
   onClearInitialStatus?: () => void;
   refreshTrigger?: number;
@@ -13,15 +25,17 @@ interface JobExplorerProps {
 
 export const JobExplorer: React.FC<JobExplorerProps> = ({
   onSelectJob,
+  savedFilters,
+  onUpdateFilters,
   initialStatus,
   onClearInitialStatus,
   refreshTrigger,
 }) => {
   const [jobs, setJobs] = React.useState<Job[]>([]);
-  const [searchId, setSearchId] = React.useState('');
-  const [statusFilter, setStatusFilter] = React.useState<string>(initialStatus || '');
-  const [priorityFilter, setPriorityFilter] = React.useState<string>('');
-  const [taskTypeFilter, setTaskTypeFilter] = React.useState<string>('');
+  const [searchId, setSearchId] = React.useState(savedFilters?.searchId || '');
+  const [statusFilter, setStatusFilter] = React.useState<string>(savedFilters?.status ?? initialStatus ?? '');
+  const [priorityFilter, setPriorityFilter] = React.useState<string>(savedFilters?.priority || '');
+  const [taskTypeFilter, setTaskTypeFilter] = React.useState<string>(savedFilters?.taskType || '');
   const [page, setPage] = React.useState(1);
   const [pageSize] = React.useState(15);
   const [totalPages, setTotalPages] = React.useState(1);
@@ -29,6 +43,68 @@ export const JobExplorer: React.FC<JobExplorerProps> = ({
   const [isInitialLoading, setIsInitialLoading] = React.useState(true);
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Synchronize internal filter state if savedFilters prop updates (e.g. from Overview card click)
+  React.useEffect(() => {
+    if (savedFilters) {
+      if (savedFilters.status !== undefined && savedFilters.status !== statusFilter) {
+        setStatusFilter(savedFilters.status);
+        setPage(1);
+      }
+      if (savedFilters.priority !== undefined && savedFilters.priority !== priorityFilter) {
+        setPriorityFilter(savedFilters.priority);
+      }
+      if (savedFilters.taskType !== undefined && savedFilters.taskType !== taskTypeFilter) {
+        setTaskTypeFilter(savedFilters.taskType);
+      }
+      if (savedFilters.searchId !== undefined && savedFilters.searchId !== searchId) {
+        setSearchId(savedFilters.searchId);
+      }
+    }
+  }, [savedFilters]);
+
+  // Notify parent of filter changes to preserve across detail navigation
+  const updateParentFilters = (newFilters: { status?: string; priority?: string; taskType?: string; searchId?: string }) => {
+    if (onUpdateFilters) {
+      onUpdateFilters(newFilters);
+    }
+  };
+
+  const handleStatusChange = (val: string) => {
+    setStatusFilter(val);
+    setPage(1);
+    updateParentFilters({ status: val, priority: priorityFilter, taskType: taskTypeFilter, searchId });
+  };
+
+  const handlePriorityChange = (val: string) => {
+    setPriorityFilter(val);
+    setPage(1);
+    updateParentFilters({ status: statusFilter, priority: val, taskType: taskTypeFilter, searchId });
+  };
+
+  const handleTaskTypeChange = (val: string) => {
+    setTaskTypeFilter(val);
+    setPage(1);
+    updateParentFilters({ status: statusFilter, priority: priorityFilter, taskType: val, searchId });
+  };
+
+  const handleSearchIdChange = (val: string) => {
+    setSearchId(val);
+    setPage(1);
+    updateParentFilters({ status: statusFilter, priority: priorityFilter, taskType: taskTypeFilter, searchId: val });
+  };
+
+  const handleResetFilters = () => {
+    setSearchId('');
+    setStatusFilter('');
+    setPriorityFilter('');
+    setTaskTypeFilter('');
+    setPage(1);
+    updateParentFilters({ status: '', priority: '', taskType: '', searchId: '' });
+    if (onClearInitialStatus) {
+      onClearInitialStatus();
+    }
+  };
 
   const fetchJobs = React.useCallback(async (silent = false) => {
     if (!silent) {
@@ -90,17 +166,6 @@ export const JobExplorer: React.FC<JobExplorerProps> = ({
     }
   }, [refreshTrigger, fetchJobs]);
 
-  const handleResetFilters = () => {
-    setSearchId('');
-    setStatusFilter('');
-    setPriorityFilter('');
-    setTaskTypeFilter('');
-    setPage(1);
-    if (onClearInitialStatus) {
-      onClearInitialStatus();
-    }
-  };
-
   const hasActiveFilters = Boolean(searchId || statusFilter || priorityFilter || taskTypeFilter);
 
   return (
@@ -123,10 +188,7 @@ export const JobExplorer: React.FC<JobExplorerProps> = ({
                 className="form-input"
                 placeholder="Paste UUID..."
                 value={searchId}
-                onChange={(e) => {
-                  setSearchId(e.target.value);
-                  setPage(1);
-                }}
+                onChange={(e) => handleSearchIdChange(e.target.value)}
                 style={{ paddingLeft: '2rem' }}
               />
               <Search
@@ -141,10 +203,7 @@ export const JobExplorer: React.FC<JobExplorerProps> = ({
             <select
               className="form-select"
               value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => handleStatusChange(e.target.value)}
             >
               <option value="">All Statuses</option>
               <option value="QUEUED">QUEUED</option>
@@ -161,10 +220,7 @@ export const JobExplorer: React.FC<JobExplorerProps> = ({
             <select
               className="form-select"
               value={priorityFilter}
-              onChange={(e) => {
-                setPriorityFilter(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => handlePriorityChange(e.target.value)}
             >
               <option value="">All Priorities</option>
               <option value="1">LOW (1)</option>
@@ -181,10 +237,7 @@ export const JobExplorer: React.FC<JobExplorerProps> = ({
               className="form-input"
               placeholder="e.g. sleep, generate_report"
               value={taskTypeFilter}
-              onChange={(e) => {
-                setTaskTypeFilter(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => handleTaskTypeChange(e.target.value)}
             />
           </div>
 

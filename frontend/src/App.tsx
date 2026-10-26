@@ -100,11 +100,20 @@ export const App: React.FC = () => {
     }
   };
 
-  const [explorerFilterStatus, setExplorerFilterStatus] = React.useState<string | undefined>(undefined);
+  interface ExplorerFilters {
+    status?: string;
+    priority?: string;
+    taskType?: string;
+    searchId?: string;
+  }
+  const [explorerFilters, setExplorerFilters] = React.useState<ExplorerFilters>({});
 
   const handleNavigateExplorer = (status?: string) => {
     setSelectedJobId(null);
-    setExplorerFilterStatus(status);
+    setExplorerFilters((prev) => ({
+      ...prev,
+      status: status || '',
+    }));
     setCurrentPage('explorer');
   };
 
@@ -114,9 +123,6 @@ export const App: React.FC = () => {
         currentPage={currentPage}
         onNavigate={(page) => {
           setSelectedJobId(null);
-          if (page !== 'explorer') {
-            setExplorerFilterStatus(undefined);
-          }
           setCurrentPage(page);
         }}
         serviceStatus={serviceStatus}
@@ -149,8 +155,8 @@ export const App: React.FC = () => {
               {currentPage === 'explorer' && (
                 <JobExplorer
                   onSelectJob={handleSelectJob}
-                  initialStatus={explorerFilterStatus}
-                  onClearInitialStatus={() => setExplorerFilterStatus(undefined)}
+                  savedFilters={explorerFilters}
+                  onUpdateFilters={setExplorerFilters}
                   refreshTrigger={refreshTrigger}
                 />
               )}

@@ -89,7 +89,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ jobId, onBack }) => {
   };
 
   const handleCancel = async () => {
-    if (!window.confirm('Are you sure you want to cancel this job?')) return;
+    if (!window.confirm(`Are you sure you want to cancel Job ${jobId.substring(0, 8)}...? Running tasks will be aborted at the next cooperative checkpoint.`)) return;
     setIsActing(true);
     setActionError(null);
     try {
@@ -104,6 +104,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ jobId, onBack }) => {
   };
 
   const handleRetry = async () => {
+    if (!window.confirm(`Are you sure you want to retry Job ${jobId.substring(0, 8)}...? This will initiate a new execution cycle and dispatch the task to the queue.`)) return;
     setIsActing(true);
     setActionError(null);
     try {
@@ -227,10 +228,15 @@ export const JobDetail: React.FC<JobDetailProps> = ({ jobId, onBack }) => {
           </div>
 
           <div style={{ textAlign: 'right' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Attempts</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Attempt (Current Cycle)</span>
             <div className="mono-text" style={{ fontSize: '1.1rem', fontWeight: 700, color: '#fff' }}>
               {job.attempt_count} / {job.max_attempts}
             </div>
+            {job.execution_cycle && job.execution_cycle > 1 && (
+              <span className="mono-text" style={{ fontSize: '0.75rem', color: '#60a5fa' }}>
+                Cycle {job.execution_cycle} ({job.total_attempt_count || job.attempt_count} total exec)
+              </span>
+            )}
           </div>
         </div>
 
@@ -281,10 +287,35 @@ export const JobDetail: React.FC<JobDetailProps> = ({ jobId, onBack }) => {
               </span>
             )}
           </div>
-          <p style={{ color: '#f87171', fontSize: '0.9rem', marginBottom: job.error_details ? '0.75rem' : 0 }}>
+          <p style={{ color: '#f87171', fontSize: '0.9rem', marginBottom: '0.75rem' }}>
             {job.error_message}
           </p>
-          {job.error_details && <JsonViewer title="Error Details" data={job.error_details} />}
+
+          {/* Dedicated Traceback Display if present */}
+          {job.error_details?.traceback && (
+            <div style={{ marginBottom: '0.75rem' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.25rem' }}>
+                Python Traceback (Captured at Exception Site)
+              </span>
+              <pre
+                className="mono-text"
+                style={{
+                  padding: '0.75rem',
+                  background: '#040711',
+                  border: '1px solid #1e293b',
+                  borderRadius: 4,
+                  fontSize: '0.75rem',
+                  color: '#f87171',
+                  overflowX: 'auto',
+                  maxHeight: '220px',
+                }}
+              >
+                {job.error_details.traceback}
+              </pre>
+            </div>
+          )}
+
+          {job.error_details && <JsonViewer title="Error Details Payload" data={job.error_details} defaultCollapsed={true} />}
         </div>
       )}
 
@@ -345,27 +376,50 @@ export const JobDetail: React.FC<JobDetailProps> = ({ jobId, onBack }) => {
           </div>
         ) : (
           <div className="timeline">
-            {events.map((evt) => (
-              <div key={evt.id} className="timeline-item">
-                <div className="timeline-marker" />
-                <div className="timeline-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
-                  <span className="mono-text" style={{ color: '#fff', fontWeight: 600 }}>
-                    {evt.event_type}
-                  </span>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    {evt.metadata_payload?.attempt ? `Attempt #${evt.metadata_payload.attempt}` : ''}
-                  </span>
-                </div>
-                <div className="timeline-time">{formatDate(evt.created_at)}</div>
-                {evt.metadata_payload && Object.keys(evt.metadata_payload).length > 0 && (
-                  <JsonViewer
-                    title="Event Metadata"
-                    data={evt.metadata_payload}
-                    defaultCollapsed={true}
+            {events.map((evt) => {
+              const isManual = evt.event_type.includes('MANUAL') || evt.metadata_payload?.manual === true;
+              const isAutoRetry = evt.event_type === 'JOB_RETRIED' || evt.event_type === 'RETRYING';
+              return (
+                <div key={evt.id} className="timeline-item">
+                  <div
+                    className="timeline-marker"
+                    style={{
+                      borderColor: isManual ? '#818cf8' : isAutoRetry ? '#fbbf24' : undefined,
+                      backgroundColor: isManual ? '#4f46e5' : isAutoRetry ? 'rgba(251, 191, 36, 0.2)' : undefined,
+                    }}
                   />
-                )}
-              </div>
-            ))}
+                  <div className="timeline-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span className="mono-text" style={{ color: '#fff', fontWeight: 600 }}>
+                        {evt.event_type}
+                      </span>
+                      {isManual && (
+                        <span style={{ fontSize: '0.65rem', background: 'rgba(99, 102, 241, 0.2)', color: '#818cf8', padding: '0.1rem 0.35rem', borderRadius: 3, fontWeight: 700 }}>
+                          MANUAL INTERVENTION
+                        </span>
+                      )}
+                      {isAutoRetry && !isManual && (
+                        <span style={{ fontSize: '0.65rem', background: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24', padding: '0.1rem 0.35rem', borderRadius: 3, fontWeight: 700 }}>
+                          AUTOMATIC RETRY
+                        </span>
+                      )}
+                    </div>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      {evt.metadata_payload?.cycle ? `Cycle ${evt.metadata_payload.cycle} • ` : ''}
+                      {evt.metadata_payload?.attempt ? `Attempt #${evt.metadata_payload.attempt}` : ''}
+                    </span>
+                  </div>
+                  <div className="timeline-time">{formatDate(evt.created_at)}</div>
+                  {evt.metadata_payload && Object.keys(evt.metadata_payload).length > 0 && (
+                    <JsonViewer
+                      title="Event Metadata"
+                      data={evt.metadata_payload}
+                      defaultCollapsed={true}
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
