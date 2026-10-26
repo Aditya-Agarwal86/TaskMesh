@@ -210,6 +210,7 @@ async def test_diagnostics_endpoint_trigger_and_retrieve(client, db_session: Asy
 
     # Patch genai.Client in diagnostics_service so when endpoint instantiates GeminiDiagnosticsService it gets mock_client
     with patch("app.services.diagnostics_service.settings.GEMINI_API_KEY", "mock-gemini-key"), \
+         patch("app.services.diagnostics_service.settings.GEMINI_MODEL", "gemini-2.5-flash"), \
          patch("app.services.diagnostics_service.genai.Client", return_value=mock_client):
 
         # 1. Trigger analysis via POST
@@ -218,7 +219,7 @@ async def test_diagnostics_endpoint_trigger_and_retrieve(client, db_session: Asy
         data = res.json()
         assert data["error_category"] == "AuthenticationFailure"
         assert data["retry_may_help"] is False
-        assert data["model"] == "gemini-3.5-flash"
+        assert data["model"] == "gemini-2.5-flash"
 
         # 2. Retrieve history via GET
         get_res = await client.get(f"/api/v1/jobs/{job.id}/diagnostics")
@@ -227,3 +228,72 @@ async def test_diagnostics_endpoint_trigger_and_retrieve(client, db_session: Asy
         assert diag is not None
         assert diag["error_category"] == "AuthenticationFailure"
         assert "STRIPE_SECRET_KEY" in diag["recommended_next_steps"][0]
+
+
+@pytest.mark.asyncio
+async def test_diagnose_failure_model_not_found(db_session: AsyncSession):
+    """Verifies that 404 / model not found errors are gracefully handled without crashing."""
+    job = Job(
+        task_type="webhook",
+        payload={},
+        status=JobStatus.FAILED,
+        error_message="502 Bad Gateway",
+        attempt_count=1,
+    )
+    db_session.add(job)
+    await db_session.commit()
+    await db_session.refresh(job)
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = Exception("404 NOT_FOUND: models/gemini-unsupported-model is not found")
+
+    service = GeminiDiagnosticsService(db_session, client=mock_client)
+    result = await service.diagnose_job_failure(job.id)
+    assert result is None
+    assert "not found" in service.last_error.lower()
+
+
+@pytest.mark.asyncio
+async def test_diagnose_failure_authentication_error(db_session: AsyncSession):
+    """Verifies that 401/403 or invalid API key errors are categorized correctly."""
+    job = Job(
+        task_type="webhook",
+        payload={},
+        status=JobStatus.FAILED,
+        error_message="Connection Refused",
+        attempt_count=1,
+    )
+    db_session.add(job)
+    await db_session.commit()
+    await db_session.refresh(job)
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = Exception("401 API_KEY_INVALID: API key not valid")
+
+    service = GeminiDiagnosticsService(db_session, client=mock_client)
+    result = await service.diagnose_job_failure(job.id)
+    assert result is None
+    assert "invalid or unauthorized" in service.last_error.lower()
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_endpoint_unconfigured_returns_503(client, db_session: AsyncSession):
+    """Verifies that requesting /analyze when GEMINI_API_KEY is not configured returns 503 DIAGNOSTICS_UNAVAILABLE."""
+    job = Job(
+        task_type="http_webhook",
+        payload={"url": "https://example.com"},
+        status=JobStatus.FAILED,
+        error_message="Connection timed out",
+        attempt_count=2,
+    )
+    db_session.add(job)
+    await db_session.commit()
+    await db_session.refresh(job)
+
+    with patch("app.services.diagnostics_service.settings.GEMINI_API_KEY", None):
+        res = await client.post(f"/api/v1/jobs/{job.id}/diagnostics/analyze")
+        assert res.status_code == 503
+        data = res.json()
+        assert data["detail"]["code"] == "DIAGNOSTICS_UNAVAILABLE"
+        assert "GEMINI_API_KEY" in data["detail"]["message"]
+

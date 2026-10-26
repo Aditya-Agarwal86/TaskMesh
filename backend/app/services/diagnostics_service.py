@@ -177,7 +177,7 @@ Return a single JSON object with the following fields:
 Do NOT execute code or produce executable commands without caution. Provide analysis only.
 """
 
-        model_name = settings.GEMINI_MODEL or "gemini-3.5-flash"
+        model_name = settings.GEMINI_MODEL or "gemini-2.5-flash"
         raw_text: Optional[str] = None
         diagnostic_data: Optional[DiagnosticOutput] = None
 
@@ -214,13 +214,18 @@ Do NOT execute code or produce executable commands without caution. Provide anal
             except asyncio.TimeoutError:
                 self.last_error = "Gemini API request timed out after 20 seconds."
                 logger.warning(f"Timeout querying Gemini API for job {job.id} (attempt {retry + 1}/2)")
+            except (json.JSONDecodeError, ValueError) as json_err:
+                self.last_error = f"Malformed response received from Gemini API: {json_err}"
+                logger.warning(f"Malformed response from Gemini API for job {job.id}: {json_err}")
+                # Do not retry on malformed JSON; fail gracefully immediately
+                break
             except Exception as exc:
                 err_str = str(exc)
                 if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
                     self.last_error = "Gemini API rate limit or quota exceeded (429 RESOURCE_EXHAUSTED). Please check your Gemini API plan quota."
-                elif "NOT_FOUND" in err_str or "404" in err_str:
-                    self.last_error = f"Gemini model not found or deprecated: {err_str}"
-                elif "API_KEY_INVALID" in err_str or "401" in err_str or "403" in err_str:
+                elif "NOT_FOUND" in err_str or "404" in err_str or "model" in err_str.lower() and "not found" in err_str.lower():
+                    self.last_error = f"Gemini model not found or unsupported ({model_name}): {err_str}"
+                elif "API_KEY_INVALID" in err_str or "401" in err_str or "403" in err_str or "UNAUTHENTICATED" in err_str or "PERMISSION_DENIED" in err_str:
                     self.last_error = "Gemini API key is invalid or unauthorized (HTTP 401/403)."
                 else:
                     self.last_error = f"Gemini API error: {err_str}"
