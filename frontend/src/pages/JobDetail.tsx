@@ -35,31 +35,51 @@ export const JobDetail: React.FC<JobDetailProps> = ({ jobId, onBack }) => {
   const [isActing, setIsActing] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
 
+  const [eventsError, setEventsError] = React.useState<string | null>(null);
+  const requestSeqRef = React.useRef(0);
+
   const fetchJobData = React.useCallback(async () => {
+    const currentSeq = ++requestSeqRef.current;
     try {
       setError(null);
-      const [jobData, eventList] = await Promise.all([
-        api.getJob(jobId),
-        api.getJobEvents(jobId).catch(() => []),
-      ]);
+      const jobData = await api.getJob(jobId);
+      if (currentSeq !== requestSeqRef.current) return;
       setJob(jobData);
-      setEvents(eventList);
+
+      try {
+        const eventList = await api.getJobEvents(jobId);
+        if (currentSeq === requestSeqRef.current) {
+          setEvents(eventList);
+          setEventsError(null);
+        }
+      } catch (err: any) {
+        if (currentSeq === requestSeqRef.current) {
+          setEventsError(err.message || 'Unable to fetch audit events.');
+        }
+      }
 
       if (jobData.status === 'FAILED' || jobData.status === 'RETRYING' || jobData.error_message) {
         setIsLoadingDiag(true);
         api.getJobDiagnostics(jobId)
-          .then((d) => setDiagnostic(d))
+          .then((d) => {
+            if (currentSeq === requestSeqRef.current) setDiagnostic(d);
+          })
           .catch(() => {})
-          .finally(() => setIsLoadingDiag(false));
+          .finally(() => {
+            if (currentSeq === requestSeqRef.current) setIsLoadingDiag(false);
+          });
       }
     } catch (err: any) {
+      if (currentSeq !== requestSeqRef.current) return;
       if (err instanceof ApiError && err.status === 404) {
         setError(`Job ${jobId} was not found.`);
       } else {
         setError(err.message || 'Failed to load job details.');
       }
     } finally {
-      setIsLoading(false);
+      if (currentSeq === requestSeqRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [jobId]);
 
@@ -370,7 +390,12 @@ export const JobDetail: React.FC<JobDetailProps> = ({ jobId, onBack }) => {
           </div>
         </div>
 
-        {events.length === 0 ? (
+        {eventsError ? (
+          <div className="alert alert-error" style={{ margin: '1rem' }}>
+            <AlertTriangle size={16} />
+            <span style={{ fontSize: '0.85rem' }}>Failed to retrieve audit trail: {eventsError}</span>
+          </div>
+        ) : events.length === 0 ? (
           <div className="empty-state" style={{ padding: '1.5rem' }}>
             <p>No historical transition events recorded for this job.</p>
           </div>
