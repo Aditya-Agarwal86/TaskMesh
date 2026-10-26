@@ -57,9 +57,17 @@ async def submit_job(
             detail={"code": "IDEMPOTENCY_KEY_CONFLICT", "message": str(e)},
         )
     except InvalidJobPayloadError as e:
+        error_detail = {
+            "code": "UNSUPPORTED_TASK_TYPE_OR_INVALID_PAYLOAD",
+            "message": str(e),
+        }
+        if e.supported_types:
+            error_detail["supported_types"] = e.supported_types
+        if e.details:
+            error_detail["details"] = e.details
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"code": "UNSUPPORTED_TASK_TYPE_OR_INVALID_PAYLOAD", "message": str(e)},
+            detail=error_detail,
         )
 
 

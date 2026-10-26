@@ -21,7 +21,11 @@ class ConflictError(Exception):
 
 class InvalidJobPayloadError(Exception):
     """Raised when task_type is unsupported or payload fails schema validation."""
-    pass
+    def __init__(self, message: str, supported_types: Optional[List[str]] = None, details: Optional[dict] = None):
+        super().__init__(message)
+        self.message = message
+        self.supported_types = supported_types
+        self.details = details
 
 
 class NotFoundError(Exception):
@@ -64,16 +68,27 @@ class JobService:
             Tuple[Job, bool]: (job, created_flag) where created_flag is True if newly created.
         """
         # Validate task type and payload schema before creating any records
+        if not default_task_registry.is_task_supported(request.task_type):
+            supported = default_task_registry.get_supported_task_types()
+            raise InvalidJobPayloadError(
+                f"Unsupported task type '{request.task_type}'. Supported types: {supported}",
+                supported_types=supported,
+            )
+
         try:
             validated_payload = default_task_registry.validate_task_submission(
                 request.task_type, request.payload or {}
             )
         except ValueError as ve:
-            raise InvalidJobPayloadError(str(ve))
+            supported = default_task_registry.get_supported_task_types()
+            raise InvalidJobPayloadError(str(ve), supported_types=supported)
         except PydanticValidationError as pve:
             errors = pve.errors()
             err_msg = "; ".join([f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in errors])
-            raise InvalidJobPayloadError(f"Task payload validation failed for '{request.task_type}': {err_msg}")
+            raise InvalidJobPayloadError(
+                f"Task payload validation failed for '{request.task_type}': {err_msg}",
+                details={"errors": errors},
+            )
 
         if request.idempotency_key:
             stmt = select(Job).where(Job.idempotency_key == request.idempotency_key)

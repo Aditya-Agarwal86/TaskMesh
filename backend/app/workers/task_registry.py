@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import inspect
 import time
-from typing import Any, Callable, Coroutine, Dict, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 from pydantic import BaseModel, Field, ValidationError
 from app.core.logging import get_logger
 
@@ -137,6 +137,10 @@ class TaskRegistry:
     def is_task_supported(self, task_type: str) -> bool:
         """Returns True if task_type is registered."""
         return task_type in self._handlers
+
+    def get_supported_task_types(self) -> List[str]:
+        """Returns a sorted list of registered task type names."""
+        return sorted(list(self._handlers.keys()))
 
     def validate_task_submission(self, task_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
