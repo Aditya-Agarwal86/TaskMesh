@@ -28,8 +28,10 @@ export const Overview: React.FC<OverviewProps> = ({ onSelectJob, onNavigateExplo
   const [failedJobs, setFailedJobs] = React.useState<Job[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const requestSeqRef = React.useRef(0);
 
   const fetchOverviewData = React.useCallback(async (silent = false) => {
+    const currentSeq = ++requestSeqRef.current;
     try {
       if (!silent) {
         setError(null);
@@ -40,19 +42,20 @@ export const Overview: React.FC<OverviewProps> = ({ onSelectJob, onNavigateExplo
         api.listJobs({ status: 'FAILED', page: 1, page_size: 10 }),
       ]);
 
+      if (currentSeq !== requestSeqRef.current) return;
+
       setMetrics(m);
       setRecentJobs(jobsRes.items || []);
       setFailedJobs(errorJobsRes.items || []);
+      setError(null);
     } catch (err: any) {
-      if (!silent) {
-        if (err instanceof ApiError) {
-          setError(`Failed to load metrics: ${err.message}`);
-        } else {
-          setError('Error loading system overview data.');
-        }
-      }
+      if (currentSeq !== requestSeqRef.current) return;
+      const errMsg = err instanceof ApiError ? `Failed to refresh telemetry: ${err.message}` : 'Error connecting to TaskMesh telemetry API.';
+      setError(errMsg);
     } finally {
-      setIsLoading(false);
+      if (currentSeq === requestSeqRef.current) {
+        setIsLoading(false);
+      }
     }
   }, []);
 

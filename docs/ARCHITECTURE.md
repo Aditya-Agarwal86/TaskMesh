@@ -168,4 +168,32 @@ If the API or Dispatcher crashes at any point, uncommitted jobs never reach the 
 - If a failure occurs without an active exception (e.g. non-exception cancellation or manual abort), `error_details` avoids storing `NoneType: None` and instead records structured context or clean `None`.
 - Telemetry redaction (`sanitize_data`) strips sensitive credentials, tokens, and authorization headers before logging or AI diagnostics transmission.
 
+---
+
+## 10. Canonical Telemetry & Metric Semantics
+
+To guarantee consistency across the API endpoints, backend calculations, and developer dashboard, TaskMesh establishes strict semantic boundaries for all telemetry counters:
+
+### A. Lifetime Totals vs. Current State vs. Window Statistics
+| Metric Name | Storage Source | Category | Semantic Definition & Invariant |
+| :--- | :--- | :--- | :--- |
+| **`total_jobs`** | PostgreSQL | Current Total | All jobs persisted in PostgreSQL across all states. Invariant: `total_jobs == queued + running + retrying + succeeded + failed + cancelled`. |
+| **`queued_jobs`** | PostgreSQL | Current State | Jobs in state `QUEUED` waiting for queue dispatch or worker pickup. |
+| **`running_jobs`** | PostgreSQL | Current State | Jobs in state `RUNNING` currently claimed by a worker with an active lease. |
+| **`retrying_jobs`**| PostgreSQL | Current State | Jobs in state `RETRYING` scheduled for retry and awaiting exponential backoff. |
+| **`succeeded_jobs`**| PostgreSQL | Current Total | Jobs in state `SUCCEEDED` that executed to completion successfully. |
+| **`failed_jobs`** | PostgreSQL | Current Total | Jobs in terminal state `FAILED` that exhausted retry attempts or suffered permanent errors. |
+| **`cancelled_jobs`**| PostgreSQL | Current Total | Jobs in terminal state `CANCELLED` aborted by an operator or client signal. |
+| **`processed_jobs`**| PostgreSQL | Derived Total | Jobs that have been picked up and processed by workers: `succeeded_jobs + failed_jobs + running_jobs + retrying_jobs`. (Excludes unpicked `QUEUED` jobs). |
+| **`terminal_jobs`** | PostgreSQL | Derived Total | Jobs that have reached final states: `succeeded_jobs + failed_jobs + cancelled_jobs`. |
+| **`total_retries`** | PostgreSQL | Lifetime Cumulative | Total retry transitions experienced: $\sum \max(0, \text{attempt\_count} - 1)$. |
+| **`pending_queue_depth`**| Redis | Ephemeral Queue | Number of job items currently in the Redis priority Sorted Set (`ZSET`) awaiting worker claim. |
+| **`processing_leases`** | Redis | Ephemeral Leases | Number of active worker lease keys in Redis (`job:lease:*`). |
+| **`dlq_depth`** | Redis | Ephemeral Queue | Jobs routed to the Redis dead-letter structure (`taskmesh:dlq`) awaiting operator remediation. |
+| **`online_workers`** | Redis | Live Presence | Total worker nodes registered in Redis with heartbeats within the last 30 seconds. |
+| **`busy_workers`** | Redis / DB | Live State | Online workers currently holding an active job lease. |
+| **`idle_workers`** | Redis / DB | Live State | Online workers currently polling without an assigned task. |
+| **`avg_duration`** | PostgreSQL | Sampled Window | Moving average execution duration (seconds) over the latest 50 completed `SUCCEEDED` jobs with valid `started_at` and `completed_at`. |
+
+
 

@@ -67,12 +67,13 @@ export const App: React.FC = () => {
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
-    await fetchHealth();
-    setRefreshTrigger((prev) => prev + 1);
-    setTimeout(() => {
-      setIsRefreshing(false);
+    try {
+      await fetchHealth();
+      setRefreshTrigger((prev) => prev + 1);
       setLastUpdated(new Date());
-    }, 500);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
 

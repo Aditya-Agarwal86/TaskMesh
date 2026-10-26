@@ -24,8 +24,10 @@ export const WorkersQueue: React.FC<WorkersQueueProps> = ({ onSelectJob, refresh
   const [readiness, setReadiness] = React.useState<{ database: string; redis: string } | null>(null);
   const [isLoading, setIsLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const requestSeqRef = React.useRef(0);
 
   const fetchWorkersAndQueue = React.useCallback(async (silent = false) => {
+    const currentSeq = ++requestSeqRef.current;
     try {
       if (!silent) {
         setError(null);
@@ -35,15 +37,20 @@ export const WorkersQueue: React.FC<WorkersQueueProps> = ({ onSelectJob, refresh
         api.getReadiness().catch(() => null),
         api.listJobs({ status: 'RUNNING', page_size: 20 }),
       ]);
+
+      if (currentSeq !== requestSeqRef.current) return;
+
       setMetrics(m);
       setReadiness(r ? { database: r.database, redis: r.redis } : null);
       setActiveJobs(runningRes.items || []);
+      setError(null);
     } catch (err: any) {
-      if (!silent) {
-        setError(err.message || 'Error fetching worker and queue state.');
-      }
+      if (currentSeq !== requestSeqRef.current) return;
+      setError(err.message || 'Error fetching worker and queue state.');
     } finally {
-      setIsLoading(false);
+      if (currentSeq === requestSeqRef.current) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
