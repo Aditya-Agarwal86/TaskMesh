@@ -6,45 +6,24 @@ TaskMesh is a resilient distributed task processing platform built with FastAPI,
 
 ## Architecture & Data Flow
 
-```
-                      +-----------------------------+
-                      |   React 18 + TS Dashboard   |
-                      |   (Vite / Tailwind / SSE)   |
-                      +--------------+--------------+
-                                     |
-               HTTP REST / SSE       |   Live Telemetry / Heartbeats
-                                     v
-                      +-----------------------------+
-                      |       FastAPI API Pod       |
-                      |    (Validation / Engine)    |
-                      +--------------+--------------+
-                                     |
-                       ACID Commit   |   (Job + OutboxEvent + JobEvent)
-                                     v
-                      +-----------------------------+
-                      |   PostgreSQL 16 Database    |
-                      | (Authoritative Relational)  |
-                      +--------------+--------------+
-                                     |
-                       FOR UPDATE    |   SKIP LOCKED
-                                     v
-                      +-----------------------------+
-                      |      Outbox Dispatcher      |
-                      +--------------+--------------+
-                                     |
-                         ZADD / Score|   Atomic Lua Lease Acquisition
-                                     v
-                      +-----------------------------+
-                      |       Redis 7 Instance      |
-                      | (ZSET Queue / Leases / Pub) |
-                      +--------------+--------------+
-                                     |
-                         Claim Job   |   Heartbeat Renewals
-                                     v
-                      +-----------------------------+
-                      |   Python Worker Engine(s)   |
-                      |  (Handlers / Co-op Abort)   |
-                      +-----------------------------+
+```mermaid
+flowchart TD
+    Client["React 18 Dashboard<br/>(TypeScript / Vite / SSE)"]
+    API["FastAPI API Pod<br/>(Input Validation / Registry)"]
+    PG[("PostgreSQL 16 Database<br/>(Jobs + Outbox + Events)")]
+    Dispatcher["Outbox Dispatcher<br/>(FOR UPDATE SKIP LOCKED)"]
+    Redis[("Redis 7 Instance<br/>(Priority ZSET + Leases + PubSub)")]
+    Workers["Worker Engine Pods<br/>(Lua Claims / Heartbeats / Handlers)"]
+
+    Client -->|"HTTP POST / REST"| API
+    API -->|"Atomic ACID Commit"| PG
+    Dispatcher -->|"Poll Pending Outbox"| PG
+    Dispatcher -->|"ZADD Priority Score"| Redis
+    Redis -->|"Atomic Lua Claim / Lease"| Workers
+    Workers -->|"State Transitions & Events"| PG
+    Workers -->|"Heartbeat TTL Renewal"| Redis
+    Redis -->|"Pub/Sub Event Notifications"| API
+    API -->|"SSE Real-Time Stream"| Client
 ```
 
 ### 1. Data Flow Walkthrough
@@ -269,3 +248,21 @@ npm run build
 | **Job stuck in RUNNING** | Worker process crashed without clean shutdown | Wait for lease expiration (default 60s); supervisor automatically reclaims the job and transitions it to `RETRYING`. |
 | **HTTP 422 on job submission** | Task type not in server task registry | Check supported task types via preset dropdown or review `TaskRegistry.get_supported_tasks()`. |
 | **Gemini 503 DIAGNOSTICS_UNAVAILABLE** | Missing `GEMINI_API_KEY` or rate limit | Ensure valid key is set in `.env` or examine quota in Google AI Studio. System functions normally without AI key. |
+
+---
+
+## Security Model & Deployment Checklist
+
+### Current Security Posture
+- **Target Context**: Currently configured for a **trusted local development and portfolio demonstration environment**.
+- **CORS Protection**: Bound strictly to configured frontend development origins (`http://localhost:5173`, `http://127.0.0.1:5173`). Wildcard `*` origins are disabled.
+- **Secret Redaction**: Payloads sent to external providers (e.g. Gemini) recursively scrub passwords, tokens, API keys, JWTs, and bearer strings (`[REDACTED_SECRET]`).
+- **Input Bounds**: Pydantic schemas enforce type validation, priority boundaries (1-10), attempt limits, and supported task types at the API perimeter.
+- **Zero Raw Traces**: Client errors return clean structured codes (`VALIDATION_ERROR`, `JOB_NOT_FOUND`, `INVALID_STATE_FOR_RETRY`) rather than internal database schemas or unhandled exceptions.
+
+### Known Security & Operational Limitations (Before Public Staging/Production)
+1. **Authentication & RBAC**: The API currently does not require authentication headers or role checks for job submission, cancellation, or retries. Before deploying to an untrusted public network, an API gateway or OAuth2/JWT middleware must be configured.
+2. **Container Non-Root User**: Docker containers currently run as default root. For staging Kubernetes/ECS deployments, specify `USER 1000:1000` in the Dockerfile.
+3. **Database High Availability**: PostgreSQL and Redis run as standalone Docker Compose services. Production requires managed multi-AZ instances with continuous automated WAL archiving and Redis Sentinel/Cluster.
+4. **Rate Limiting**: Add reverse proxy rate limiting (e.g. Nginx or Cloudflare) to prevent DoS attacks on `/api/v1/jobs` and `/events/stream`.
+
