@@ -61,4 +61,29 @@ describe('JobSubmit Flow', () => {
     fireEvent.click(inspectBtn);
     expect(onJobCreated).toHaveBeenCalledWith(mockCreatedJob);
   });
+
+  it('displays 422 API validation error when unsupported task type is rejected by server', async () => {
+    const onJobCreated = vi.fn();
+    const { ApiError } = await import('../lib/api');
+    (api.createJob as any).mockRejectedValueOnce(
+      new ApiError(
+        422,
+        'UNSUPPORTED_TASK_TYPE_OR_INVALID_PAYLOAD',
+        "Unsupported task type 'Lunch'. Supported types: ['sleep', 'generate_report', 'fail_once']",
+        { supported_types: ['sleep', 'generate_report', 'fail_once'] }
+      )
+    );
+
+    render(<JobSubmit onJobCreated={onJobCreated} />);
+
+    const submitBtn = screen.getByRole('button', { name: /submit job/i });
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/UNSUPPORTED_TASK_TYPE_OR_INVALID_PAYLOAD/i)).toBeInTheDocument();
+      expect(screen.getByText(/Unsupported task type 'Lunch'/i)).toBeInTheDocument();
+    });
+    expect(onJobCreated).not.toHaveBeenCalled();
+  });
 });
+
