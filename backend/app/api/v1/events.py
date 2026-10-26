@@ -71,6 +71,7 @@ async def event_stream(request: Request):
                 now = time.time()
                 if now - last_heartbeat >= heartbeat_interval:
                     yield f": ping {int(now)}\n\n"
+                    yield f"event: ping\ndata: {{\"timestamp\": {now}}}\n\n"
                     last_heartbeat = now
 
         except asyncio.CancelledError:

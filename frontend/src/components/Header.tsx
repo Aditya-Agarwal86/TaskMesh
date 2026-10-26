@@ -147,11 +147,13 @@ export const Header: React.FC<HeaderProps> = ({
           const updateTime = lastEventTime || lastUpdated;
           if (!updateTime) return null;
 
+          // Data is only considered stale if stream is disconnected/reconnecting/fallback and time threshold has elapsed,
+          // or if connected but no event or heartbeat was received for over 45s.
           const isStale =
             streamStatus === 'disconnected' ||
             streamStatus === 'reconnecting' ||
-            streamStatus === 'polling_fallback' ||
-            Date.now() - updateTime.getTime() > 30000;
+            (streamStatus === 'polling_fallback' && Date.now() - updateTime.getTime() > 15000) ||
+            (streamStatus === 'connected' && Date.now() - updateTime.getTime() > 45000);
 
           return (
             <span

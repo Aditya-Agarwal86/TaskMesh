@@ -61,6 +61,11 @@ export function useEventStream({
       setLastEventTime(new Date());
     });
 
+    es.addEventListener('ping', () => {
+      if (!isMountedRef.current) return;
+      setLastEventTime(new Date());
+    });
+
     es.addEventListener('job_update', (e: MessageEvent) => {
       if (!isMountedRef.current) return;
       setLastEventTime(new Date());

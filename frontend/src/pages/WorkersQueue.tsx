@@ -152,7 +152,7 @@ export const WorkersQueue: React.FC<WorkersQueueProps> = ({ onSelectJob, refresh
           icon={<AlertTriangle size={18} />}
         />
         <MetricCard
-          label="Active Workers"
+          label="Online Workers"
           value={activeWorkerCount}
           subtitle={`${workers.filter((w) => w.status === 'BUSY').length} busy, ${workers.filter((w) => w.status === 'IDLE').length} idle`}
           icon={<Heart size={18} />}
@@ -160,7 +160,7 @@ export const WorkersQueue: React.FC<WorkersQueueProps> = ({ onSelectJob, refresh
         <MetricCard
           label="Succeeded Jobs"
           value={metrics ? (metrics.succeeded_jobs ?? metrics.completed_jobs) : '-'}
-          subtitle={metrics ? `${metrics.processed_jobs ?? 0} total processed` : 'Metrics loading...'}
+          subtitle={metrics ? `${metrics.processed_jobs ?? (metrics.succeeded_jobs ?? metrics.completed_jobs ?? 0)} total processed` : 'Metrics loading...'}
           icon={<Zap size={18} />}
         />
         <MetricCard
