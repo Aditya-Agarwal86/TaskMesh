@@ -1,148 +1,271 @@
-# TaskMesh Developer Guide & Startup Manual
+# TaskMesh Developer Guide & Operations Manual
 
-TaskMesh is a resilient distributed task processing platform built with FastAPI, PostgreSQL transactional outbox, Redis-backed priority queue, Python worker engine, and a React + TypeScript developer dashboard.
-
----
-
-## Architecture Summary
-
-- **Backend API**: FastAPI on `http://localhost:8000` with Swagger docs at `/docs`, SSE event stream at `/api/v1/events/stream`, and comprehensive metrics at `/health/metrics`.
-- **Database & Outbox**: PostgreSQL with transactional outbox (`outbox_events`) ensuring atomic consistency on job creation and audit logging.
-- **Priority Queue**: Redis sorted set (`ZSET`) with scores (CRITICAL=10, HIGH=8, NORMAL=5, LOW=1) and atomic Lua claim/lease scripts.
-- **Real-Time Observability**: Server-Sent Events (SSE) with bounded subscriber queues (100 cap per client), 15s heartbeat pings, Redis Pub/Sub notification bridge across pods, and automatic polling fallback on client disconnection.
-- **Workers**: Python async worker processes with lease renewal heartbeats and optimistic concurrency fencing tokens.
-- **Frontend Dashboard**: React 18, TypeScript, and Vite on `http://localhost:5173`.
-
+TaskMesh is a resilient distributed task processing platform built with FastAPI, PostgreSQL (authoritative source of truth with transactional outbox), Redis (sorted-set priority queues, atomic Lua leases, and pub/sub), Python asynchronous worker engines, and a React 18 + TypeScript developer dashboard.
 
 ---
 
-## Startup Instructions
+## Architecture & Data Flow
 
-### 1. Prerequisites
-Ensure PostgreSQL and Redis servers are running locally:
-- PostgreSQL default: `localhost:5432` (database `taskmesh`)
-- Redis default: `localhost:6379`
-
-### 2. Run Database Migrations
-From the project root:
-```bash
-python -m alembic upgrade head
+```
+                      +-----------------------------+
+                      |   React 18 + TS Dashboard   |
+                      |   (Vite / Tailwind / SSE)   |
+                      +--------------+--------------+
+                                     |
+               HTTP REST / SSE       |   Live Telemetry / Heartbeats
+                                     v
+                      +-----------------------------+
+                      |       FastAPI API Pod       |
+                      |    (Validation / Engine)    |
+                      +--------------+--------------+
+                                     |
+                       ACID Commit   |   (Job + OutboxEvent + JobEvent)
+                                     v
+                      +-----------------------------+
+                      |   PostgreSQL 16 Database    |
+                      | (Authoritative Relational)  |
+                      +--------------+--------------+
+                                     |
+                       FOR UPDATE    |   SKIP LOCKED
+                                     v
+                      +-----------------------------+
+                      |      Outbox Dispatcher      |
+                      +--------------+--------------+
+                                     |
+                         ZADD / Score|   Atomic Lua Lease Acquisition
+                                     v
+                      +-----------------------------+
+                      |       Redis 7 Instance      |
+                      | (ZSET Queue / Leases / Pub) |
+                      +--------------+--------------+
+                                     |
+                         Claim Job   |   Heartbeat Renewals
+                                     v
+                      +-----------------------------+
+                      |   Python Worker Engine(s)   |
+                      |  (Handlers / Co-op Abort)   |
+                      +-----------------------------+
 ```
 
-### 3. Start the FastAPI Backend
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-API endpoints will be live at `http://localhost:8000`.
-
-### 4. Start the Outbox Dispatcher & Workers
-In separate terminal windows:
-```bash
-# Start outbox dispatcher (polls outbox_events and publishes to Redis)
-python -m app.workers.dispatcher
-
-# Start a worker process (claims jobs by priority, runs handlers, renews leases)
-python -m app.workers.engine --worker-id worker-alpha-1 --concurrency 4
-```
-
-### 5. Start the React Frontend Dashboard
-Navigate to the `frontend/` directory:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+### 1. Data Flow Walkthrough
+1. **Job Submission**: The client submits a task via `POST /api/v1/jobs`. The API validates the `task_type` against the authoritative server task registry. If invalid, it returns `HTTP 422 Unprocessable Content` with registered options and aborts before touching storage.
+2. **Atomic Persistence**: In a single PostgreSQL transaction with row locks, the API writes:
+   - The `Job` record with state `QUEUED` and `execution_cycle = 1`.
+   - An initial `JobEvent` record (`JOB_CREATED`).
+   - An `OutboxEvent` record (`JOB_QUEUED`).
+3. **Outbox Dispatcher**: The standalone dispatcher polls `outbox_events` with `SELECT ... FOR UPDATE SKIP LOCKED`, pushes tasks into the Redis priority `ZSET`, updates outbox status to `PROCESSED`, and publishes a notification on Redis pub/sub.
+4. **Worker Lease Acquisition**: Workers poll Redis using an atomic Lua script (`claim_task.lua`) that moves jobs from `pending` to `processing` and sets a heartbeat lease key (`job:lease:<id>`) with an incremented `fencing_token`.
+5. **Execution & Cooperative Cancellation**: The worker runs the registered task handler. Long-running tasks query `await context.is_cancelled()` at checkpoints. If cancellation was requested, the task safely aborts.
+6. **Completion or Retry**:
+   - On success: State transitions to `SUCCEEDED` in PostgreSQL, `JOB_COMPLETED` audit event is written, and Redis ack removes the lease.
+   - On failure: If attempts remain within the current cycle, state transitions to `RETRYING` and exponential backoff schedules the next attempt. If attempts are exhausted, the job transitions to `FAILED` (terminal dead-letter state).
+7. **Manual Retries**: Retrying a terminally failed job starts a **new execution cycle** (`execution_cycle + 1`), resets current-cycle attempts to 0, and preserves complete historical attempts.
 
 ---
 
-## Frontend Test Suite
-To run frontend component and flow tests with Vitest:
-```bash
-cd frontend
-npm test
-```
+## Local Setup & Quickstart
 
-To build production bundle:
+### Prerequisites
+- Docker & Docker Compose (recommended) OR:
+- Python 3.12+
+- Node.js 18+ & npm
+- PostgreSQL 16+
+- Redis 7+
+
+### A. Quickstart with Docker Compose (Recommended)
+Clone the repository and launch the full stack:
 ```bash
-cd frontend
-npm run build
+# 1. Clone repository
+git clone https://github.com/Aditya-Agarwal86/TaskMesh.git
+cd TaskMesh
+
+# 2. Launch containerized services
+docker-compose up -d --build
 ```
+Containers started:
+- `taskmesh-postgres` (Port 5432)
+- `taskmesh-redis` (Port 6379)
+- `taskmesh-api` (Port 8000)
+- `taskmesh-dispatcher`
+- `taskmesh-worker-1`
+- `taskmesh-worker-2`
+- `taskmesh-frontend` (Port 5173)
+
+### B. Manual Local Setup
+
+1. **Environment Configuration**:
+   Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Database Migrations**:
+   Run Alembic migrations to apply PostgreSQL schemas:
+   ```bash
+   cd backend
+   python -m alembic upgrade head
+   ```
+
+3. **Start Backend API**:
+   ```bash
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+4. **Start Dispatcher & Worker**:
+   In separate terminals:
+   ```bash
+   # Dispatcher loop
+   python -m app.workers.dispatcher
+
+   # Worker engine process
+   python -m app.workers.engine --worker-id worker-local-1 --concurrency 4
+   ```
+
+5. **Start Frontend Client**:
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+   Open `http://localhost:5173`.
 
 ---
 
-## Backend Test Suite
-To execute all backend unit, integration, and lifecycle tests:
+## Environment Configuration
+
+Safe configuration template (`.env.example`):
+
 ```bash
-python -m pytest backend/tests -v
-```
+# Server & Environment
+PROJECT_NAME="TaskMesh"
+ENVIRONMENT="development"
+DEBUG="True"
+API_V1_PREFIX="/api/v1"
 
----
+# Database Configuration (PostgreSQL)
+DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/taskmesh"
+DB_POOL_SIZE=10
+DB_MAX_OVERFLOW=20
 
-## Features Implemented in the Frontend Dashboard
+# Redis Configuration
+REDIS_URL="redis://localhost:6379/0"
 
-1. **Overview Dashboard**
-   - Live telemetry: Total jobs, Queued, Running, Retrying, Succeeded, Failed, Cancelled.
-   - Redis Queue depth breakdown: Pending priority queue, Active processing leases, and DLQ.
-   - Reliability progress bar (Succeeded vs. Permanent Failures).
-   - Recent jobs table with instant click-through to detail view.
-   - Recent system errors feed.
+# Worker & Queue Tuning
+WORKER_CONCURRENCY=4
+LEASE_DURATION_SECONDS=60
+LEASE_HEARTBEAT_INTERVAL=15
+DISPATCHER_POLL_INTERVAL=1.0
 
-2. **Job Explorer**
-   - Paginated job table with sortable columns and custom page sizes.
-   - Search by job UUID.
-   - Multi-field filters: Status, Priority (CRITICAL, HIGH, NORMAL, LOW), Task Type.
-   - Filter clear button and clickable rows.
+# CORS Allowed Origins
+CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]
 
-3. **Job Submission**
-   - Preset buttons for registered task types (`sleep`, `generate_report`, `fail_once`, `always_fail`) or Custom task type.
-   - Formatted, syntax-validated JSON payload editor.
-   - Priority selection and maximum attempts with backoff jitter support.
-   - Optional Idempotency key for deduplication and replay prevention.
-   - Inline API validation errors and success confirmation card with direct link to job details.
-
-4. **Job Details**
-   - Comprehensive metadata: Status badge, priority tag, attempt counter, ISO timestamps (created, started, completed, next scheduled retry).
-   - Active worker ID and lease expiration status.
-   - Formatted JSON viewers for Input payload and Output result.
-   - Structured Failure Information diagnostic card displaying error type and error details.
-   - Chronological state-transition audit event timeline with transition payloads.
-   - Context-aware action buttons: **Cancel Job** (for queued/running/retrying jobs) and **Retry Job** (for failed/cancelled jobs).
-
-5. **Workers & Queue Telemetry**
-   - Live infrastructure health probes (PostgreSQL, Redis, Dispatcher loop).
-   - Active worker table listing worker IDs, busy status, claimed job IDs, and lease expiration timestamps.
-   - Real-time in-flight jobs table.
-   - Priority queue policy and atomic Lua lease documentation.
-
-6. **Backend Integration & Reliability**
-   - Centralized typed API client with configurable base URL (`VITE_API_URL`).
-   - Resilient bounded polling with manual refresh toggle and interval cleanup on unmount.
-   - Uniform error code and message handling for timeouts, network drops, and HTTP 4xx/5xx responses.
-
----
-
-## Optional Gemini Failure Diagnostics
-
-TaskMesh includes an optional, zero-dependency AI diagnostics feature powered by the official Google Gen AI SDK (`google-genai`). When configured, TaskMesh synthesizes structured root-cause analyses and remediation steps for failed or retrying jobs.
-
-### Configuration
-Configure your Gemini API key and model in `.env` or system environment:
-```bash
-# Optional: Google Gemini API Key
-GEMINI_API_KEY="AIzaSyYourGeminiApiKeyHere"
-
-# Optional: Configurable model (defaults to gemini-2.5-flash)
+# Optional: Google Gemini AI Diagnostics
+# Obtain API key from Google AI Studio (leave blank to run in fully offline mode)
+GEMINI_API_KEY=""
 GEMINI_MODEL="gemini-2.5-flash"
 ```
 
-If `GEMINI_API_KEY` is omitted or left blank:
-- The core queue, worker engine, dispatcher, and dashboard continue to function at 100% capacity without error.
-- Failure diagnostics are gracefully disabled or return a 503 error if explicitly invoked via the API.
+---
 
-### Security & Safety Rules
-1. **Confidentiality & Secret Redaction**: Before telemetry is sent to Gemini, payloads and error details are sanitized by stripping secrets, API keys, passwords, JWTs, and Authorization bearer headers.
-2. **Untrusted Model Output**: Diagnostics outputs are strictly parsed and validated against a Pydantic schema (`DiagnosticOutput`). Model output is treated as untrusted data and never executed as code or commands.
-3. **Deterministic Safety Rules**: AI recommendations never override retry limits, max attempts, worker fencing tokens, or cancellation states.
-4. **Resilience**: The client uses bounded retries and an asynchronous executor with a 12-second timeout to prevent stalling the server.
-5. **Clear UI Separation**: The dashboard displays AI diagnostics inside a dedicated purple card with a prominent advisory disclaimer badge distinguishing AI hypotheses from verified PostgreSQL system telemetry.
+## Supported Task Types & Example Payloads
+
+TaskMesh rejects unregistered tasks at the API boundary with `HTTP 422`. The authoritative task registry supports:
+
+| Task Type | Description | Example Payload |
+| :--- | :--- | :--- |
+| `sleep` | Pauses execution with cooperative cancellation checkpoints. | `{"duration_seconds": 1.5, "checkpoint_interval": 0.5}` |
+| `generate_report` | Computes deterministic report data hashing. | `{"report_name": "quarterly_summary", "format": "summary", "dataset": [{"count": 10}]}` |
+| `email_notification`| Simulates queued transactional email delivery. | `{"to": "dev@taskmesh.internal", "template": "alert"}` |
+| `invoice_generation`| Renders deterministic customer invoice reference. | `{"order_id": 1042}` |
+| `pdf_render` | Simulates multi-page document artifact generation. | `{"document_id": "doc-report-2026"}` |
+| `data_sync` | Synchronizes records in batches to simulate ETL ingestion. | `{"records_count": 50}` |
+| `fail_once` | Fails on attempt 1, succeeds on automatic retry via state. | `{"key": "test-key"}` |
+| `always_fail` | Permanently fails to test DLQ & failure diagnostics. | `{"reason": "Simulated hardware error"}` |
+
+---
+
+## API Endpoints Reference
+
+### Core Endpoints
+
+- `GET /health/live`: Liveness probe for load balancers.
+- `GET /health/ready`: Readiness check verifying PostgreSQL and Redis connections.
+- `GET /health/metrics`: System telemetry (queue depths, status counts, duration stats).
+- `GET /api/v1/events/stream`: SSE real-time event stream with heartbeat ping.
+- `POST /api/v1/jobs`: Submit a new job (Accepts `task_type`, `payload`, `priority`, `max_attempts`, `idempotency_key`). Returns `202 Accepted` or `422 Unprocessable Content`.
+- `GET /api/v1/jobs`: Paginated listing with server-side filters (`status`, `task_type`, `priority`).
+- `GET /api/v1/jobs/{job_id}`: Job details, execution counters, and error tracebacks.
+- `GET /api/v1/jobs/{job_id}/events`: Chronological state-transition audit log.
+- `POST /api/v1/jobs/{job_id}/cancel`: Cancel a queued, running, or retrying job.
+- `POST /api/v1/jobs/{job_id}/retry`: Manually retry a `FAILED` or `CANCELLED` job into a new execution cycle.
+- `GET /api/v1/jobs/{job_id}/diagnostics`: Retrieve stored Gemini failure analysis.
+- `POST /api/v1/jobs/{job_id}/diagnostics/analyze`: Request on-demand Gemini failure analysis.
+
+---
+
+## Reliability & State Machine Semantics
+
+1. **Cycle Limits vs. Lifetime Attempts**:
+   - `max_attempts`: Maximum automatic retries permitted **within a single execution cycle**.
+   - `attempt_count`: Attempts consumed in the current cycle.
+   - `execution_cycle`: Incremented on each manual retry.
+   - `total_executions`: Cumulative lifetime executions across all cycles.
+2. **Idempotency & Concurrent Submissions**:
+   - Submissions with an `idempotency_key` store the key in PostgreSQL.
+   - Duplicate submissions with identical keys and payloads return the existing job.
+   - Conflicting submissions with the same key but differing payloads return `HTTP 409 Conflict`.
+3. **Leasing & Fencing**:
+   - Leases expire after 60 seconds if heartbeat fails.
+   - Zombie workers attempting to commit after supervisor lease reassignment fail the fencing token check (`fencing_token` mismatch) and abort their write.
+4. **Cooperative Cancellation**:
+   - Running jobs check cancellation signals in Redis via `await context.is_cancelled()`.
+   - CPU-bound tasks without checkpoints run until task completion or lease expiration.
+5. **Dead-Letter Safety**:
+   - Terminal jobs (`SUCCEEDED`) reject `/retry` requests with `HTTP 409 Conflict` to prevent duplicate processing.
+
+---
+
+## Optional Gemini AI Failure Diagnostics
+
+TaskMesh includes optional root-cause analysis powered by Google Gemini:
+- **Upstream Model**: Verified against current official documentation using **`gemini-2.5-flash`** (or configured via `GEMINI_MODEL`).
+- **Sanitization**: All secrets, JWTs, Bearer tokens, and sensitive keys are recursively redacted (`[REDACTED_SECRET]`) before prompt generation.
+- **Strictly Advisory**: AI output is purely advisory developer assistance. It **never** triggers retries, alters max attempts, overrides worker fencing, or sets authoritative job status.
+- **Graceful Failure**: If `GEMINI_API_KEY` is not provided, or if the API returns 429 quota exhaustion or timeouts, the error is disclosed truthfully and deterministic error details remain accessible.
+
+---
+
+## Testing & Quality Verification
+
+### Run Backend Tests
+Run all unit and integration tests inside Docker or local virtual environment:
+```bash
+docker exec taskmesh-api python -m pytest -v
+# Output: 58 passed across 8 test suites
+```
+
+### Run Frontend Tests
+```bash
+cd frontend
+npm test -- --watchAll=false
+# Output: 19 passed across 6 test suites
+```
+
+### Build Frontend Production Assets
+```bash
+cd frontend
+npm run build
+# Output: 0 type/bundle errors, generated in dist/
+```
+
+---
+
+## Troubleshooting Guide
+
+| Issue | Cause | Resolution |
+| :--- | :--- | :--- |
+| **Worker not processing jobs** | Redis connection down or queue dispatcher stopped | Check `docker ps` to verify `taskmesh-dispatcher` is running; inspect Redis connectivity via `redis-cli ping`. |
+| **SSE shows "Reconnecting"** | Backend restarted or reverse proxy dropping streaming connections | Verify CORS origin configuration in `.env`; TaskMesh automatically falls back to 4s polling. |
+| **Job stuck in RUNNING** | Worker process crashed without clean shutdown | Wait for lease expiration (default 60s); supervisor automatically reclaims the job and transitions it to `RETRYING`. |
+| **HTTP 422 on job submission** | Task type not in server task registry | Check supported task types via preset dropdown or review `TaskRegistry.get_supported_tasks()`. |
+| **Gemini 503 DIAGNOSTICS_UNAVAILABLE** | Missing `GEMINI_API_KEY` or rate limit | Ensure valid key is set in `.env` or examine quota in Google AI Studio. System functions normally without AI key. |
