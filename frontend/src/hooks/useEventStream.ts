@@ -23,6 +23,12 @@ export function useEventStream({
   const retryTimeoutRef = useRef<any>(null);
   const isMountedRef = useRef<boolean>(true);
 
+  // Keep callback references stable across renders to avoid reconnect churn
+  const onJobUpdateRef = useRef(onJobUpdate);
+  onJobUpdateRef.current = onJobUpdate;
+  const onRefreshNeededRef = useRef(onRefreshNeeded);
+  onRefreshNeededRef.current = onRefreshNeeded;
+
   const maxRetries = 5;
 
   const connect = useCallback(() => {
@@ -44,8 +50,8 @@ export function useEventStream({
       setRetryCount(0);
       setLastEventTime(new Date());
       // Reconnected: trigger state refresh from REST API to ensure no missed transitions
-      if (onRefreshNeeded) {
-        onRefreshNeeded();
+      if (onRefreshNeededRef.current) {
+        onRefreshNeededRef.current();
       }
     };
 
@@ -60,11 +66,11 @@ export function useEventStream({
       setLastEventTime(new Date());
       try {
         const parsed: SSEJobUpdateData = JSON.parse(e.data);
-        if (onJobUpdate) {
-          onJobUpdate(parsed);
+        if (onJobUpdateRef.current) {
+          onJobUpdateRef.current(parsed);
         }
-        if (onRefreshNeeded) {
-          onRefreshNeeded();
+        if (onRefreshNeededRef.current) {
+          onRefreshNeededRef.current();
         }
       } catch {
         // Ignored unparsable payload
@@ -97,7 +103,7 @@ export function useEventStream({
         return nextCount;
       });
     };
-  }, [enabled, onJobUpdate, onRefreshNeeded]);
+  }, [enabled]);
 
   useEffect(() => {
     isMountedRef.current = true;
